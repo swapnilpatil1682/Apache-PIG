@@ -1,0 +1,72 @@
+/*
+
+This is Pig UDF Created with Joda time to convert one time zone to another. You can run as follows. 
+
+We need Joda time dependency and Pig dependency in our java code.
+
+Then create jar file. export it to your cluster. Register it and Use by giving fully qualified path name.
+
+Run as below in Pig Grunt shell.
+
+A = LOAD 'order_view' USING org.apache.hive.hcatalog.pig.HCatLoader();
+B = FOREACH A GENERATE com.kohls.bigdata.omnich.piggybank.JodaDateTimeConvert(create_time_stamp,'UTC','Australia/Melbourne');
+
+*/
+
+
+
+package com.kohls.bigdata.omnich.piggybank;
+
+import org.apache.pig.EvalFunc;
+import org.apache.pig.data.Tuple;
+import org.apache.pig.impl.util.WrappedIOException;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+
+import java.io.IOException;
+
+/**
+ * Created by tkmadks on 7/6/16.
+ */
+public class JodaDateTimeConvert extends EvalFunc<String>
+
+{
+    public String exec(Tuple input) throws IOException {
+        if (input == null || input.size() == 0)
+            return null;
+        try{
+
+            String sfromdatetime = (String)input.get(0);
+
+            String sfromtimezone = (String)input.get(1);
+
+            String stotimezone = (String)input.get(2);
+
+            DateTimeZone ofromzone = DateTimeZone.forID(sfromtimezone);
+
+            DateTimeZone otozone = DateTimeZone.forID(stotimezone);
+
+            DateTime odatetime = new DateTime(sfromdatetime).withZone(otozone);
+
+            DateTime ofromdatetime =  odatetime.withZoneRetainFields(otozone);
+
+
+            DateTimeFormatter oformatter = DateTimeFormat.forPattern("yyyy-MM-dd'T'H:mm:ss.SSSZ");
+
+            DateTimeFormatter oformatter2 = DateTimeFormat.forPattern("yyyy-MM-dd H:mm:ss");
+
+            DateTime onewdatetime = oformatter.withOffsetParsed().parseDateTime(odatetime.toString());
+
+            return oformatter2.withZone(otozone).print(onewdatetime.getMillis());
+
+            // DateTime dateTime = DateTime.parse(str).toDateTime(DateTimeZone.UTC);
+            // return dateTime.toString();
+
+        }catch(Exception e){
+            throw WrappedIOException.wrap("Caught exception processing input row ", e);
+        }
+
+    }
+}
