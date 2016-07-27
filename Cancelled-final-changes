@@ -1,0 +1,256 @@
+/* ############################################################################
+#                               Documentation                                 #
+###############################################################################
+#                                                                             #
+#     Cancelled Order Units                                                   #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+###############################################################################
+#                               Implementation                                #
+############################################################################ */
+
+oms_orders_denorm_table =
+  LOAD 'order_view'
+  USING org.apache.hive.hcatalog.pig.HCatLoader()
+;
+
+oms_orders_denorm_table_date =
+  FILTER oms_orders_denorm_table
+  BY (
+       DaysBetween(ToDate('$DATE','yyyyMMddHH'),
+       ToDate(status_date)) == 0 AND
+       GetHour(ToDate(status_date)) <= (int)$DATE%100
+   )
+;
+
+filter_oms_orders_denorm_table =
+   FILTER oms_orders_denorm_table_date
+   BY (status == '9000' AND action == 'ORDER_CANCEL')
+;
+
+group_oms_orders_denorm_table =
+   GROUP filter_oms_orders_denorm_table
+   BY (ship_node,delivery_method)
+;
+
+pre_result_oms_orders_denorm_table =
+   FOREACH group_oms_orders_denorm_table
+   GENERATE FLATTEN(group),
+   SUM(filter_oms_orders_denorm_table.change_in_ordered_quantity) AS sum
+;
+
+
+/* ############################################################################
+#                               Documentation                                 #
+###############################################################################
+#                                                                             #
+#     Cancelled Order Sales                                                   #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+###############################################################################
+#                               Implementation                                #
+############################################################################ */
+
+oms_orders_denorm_table =
+  LOAD 'order_view'
+  USING org.apache.hive.hcatalog.pig.HCatLoader()
+;
+
+
+oms_orders_denorm_table_date =
+FILTER oms_orders_denorm_table
+  BY (
+       DaysBetween(ToDate('$DATE','yyyyMMddHH'),
+       ToDate(status_date)) == 0 AND
+       GetHour(ToDate(status_date)) <= (int)$DATE%100
+   )
+;
+
+oms_order_create =
+  FILTER oms_orders_denorm_table_date
+  BY action == 'ORDER_CREATE'
+;
+
+oms_order_filter =
+  GROUP oms_order_create
+  BY (order_line_key)
+;
+
+oms_fil =
+  FOREACH oms_order_filter
+  GENERATE FLATTEN (group),
+  FLATTEN(oms_order_create.delivery_method) AS delivery_method ,
+  FLATTEN(oms_order_create.ship_node) AS shipnode ,
+  FLATTEN(oms_order_create.line_total) AS line_total ,
+  FLATTEN(oms_order_create.quantity) AS quantity
+;
+
+oms_divide =
+  FOREACH oms_fil
+  GENERATE (group) AS order_line_key ,
+  shipnode, delivery_method,
+  (line_total/quantity) AS unit_price
+;
+
+oms_order_cancel =
+  FILTER oms_orders_denorm_table
+  BY action == 'ORDER_CANCEL'
+;
+
+join_create_cancel =
+  JOIN oms_divide
+  BY (order_line_key),
+  oms_order_cancel BY (order_line_key)
+;
+
+pre_result =
+  FOREACH join_create_cancel
+  GENERATE oms_divide::unit_price*oms_order_cancel::change_in_ordered_quantity,
+  oms_order_cancel::ship_node,oms_order_cancel::delivery_method
+;
+
+
+/* ############################################################################
+#                               Documentation                                 #
+###############################################################################
+#                                                                             #
+#     Cancelled Order Releases                                                #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+###############################################################################
+#                               Implementation                                #
+############################################################################ */
+
+oms_orders_denorm_table =
+  LOAD 'order_view'
+  USING org.apache.hive.hcatalog.pig.HCatLoader()
+;
+
+filter_oms_orders_denorm_table =
+  FILTER oms_orders_denorm_table
+  BY ( status == '9000' AND action == 'ORDER_CANCEL')
+;
+
+filter_oms_orders_denorm_table_date_substract =
+  FILTER filter_oms_orders_denorm_table
+  BY (
+  DaysBetween(ToDate('$DATE','yyyyMMddHH'),
+  ToDate(status_date)) == 0 AND
+  GetHour(ToDate(status_date)) <= (int)$DATE%100
+  )
+;
+
+group_filter_oms_orders_denorm_table =
+  GROUP filter_oms_orders_denorm_table_date_substract
+  BY (ship_node,delivery_method)
+ ;
+
+pre_result_filter_oms_orders_denorm_table_date_substract =
+  FOREACH group_filter_oms_orders_denorm_table
+  GENERATE FLATTEN(group),
+  COUNT(filter_oms_orders_denorm_table_date_substract.order_release_key)
+;
+
+/* ############################################################################
+#                               Documentation                                 #
+###############################################################################
+#                                                                             #
+#     Cancel Unit %			                                                  #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+#                                                                             #
+###############################################################################
+#                               Implementation                                #
+############################################################################ */
+
+cancelled_order_units =
+  LOAD 'cancelled_order_units'
+  USING org.apache.hive.hcatalog.pig.HCatLoader()
+;
+
+processed_order_units =
+  LOAD 'processed_order_units'
+  USING org.apache.hive.hcatalog.pig.HCatLoader()
+;
+
+union_processed_cancelled =
+  UNION cancelled_order_units,processed_order_units
+;
+
+group_processed_cancelled =
+  GROUP union_processed_cancelled BY ship_node
+;
+
+sum_processed_cancelled =
+  FOREACH group_processed_cancelled
+  GENERATE group as ship_node,
+  SUM(union_processed_cancelled.sum) as sum
+;
+
+left_outer_sum_cancelled =
+  JOIN sum_processed_cancelled BY ship_node LEFT OUTER,
+  cancelled_order_units BY ship_node
+;
+
+left_outer_null_check =
+  FOREACH left_outer_sum_cancelled
+  GENERATE cancelled_order_units::ship_node as ship_node,
+  cancelled_order_units::delivery_method as delivery_method,
+  (sum_processed_cancelled::sum IS NOT NULL ? sum_processed_cancelled::sum:0 ) as sum_processed,
+  (cancelled_order_units::sum IS NOT NULL ? sum_processed_cancelled::sum:0 ) as sum_cancelled
+;
+
+pre_result_percent =
+  FOREACH left_outer_null_check
+  GENERATE ship_node AS ship_node,
+  delivery_method AS delivery_method,
+  sum_processed / sum_cancelled AS percent
+;
+
+join_data = JOIN
+  pre_result_oms_orders_denorm_table BY ship_node,
+  pre_result BY ship_node,
+  pre_result_filter_oms_orders_denorm_table_date_substract BY ship_node,
+  pre_result_percent BY ship_node
+;
+
+store_result_in_resourced_kpi =
+  FOREACH join_data
+  GENERATE
+  pre_result::ship_node AS (cancelled_ship_node:chararray),
+  pre_result_oms_orders_denorm_table::sum AS (cancelled_Units:double),
+  pre_result::percent AS (cancelled_order_sales:double),
+  pre_result_filter_oms_orders_denorm_table_date_substract::count AS (cancelled_order_releases:double),
+  pre_result_percent::percent AS (cancelled_pre_result_percent:double)
+;
+
+STORE store_result_in_resourced_kpi
+  INTO 'cancelled_kpi' USING
+  org.apache.hive.hcatalog.pig.HCatStorer()
+;
+
+
+
+
+
+
+
