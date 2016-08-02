@@ -1,0 +1,106 @@
+--###############################################################################
+--#                               Documentation                                 #
+--###############################################################################
+--#                                                                             #
+--# Description                                                                 #
+--#     :                                                                       #
+--#                                                                             #
+--#                                                                             #
+--#                                                                             #
+--#                                                                             #
+--#                                                                             #
+--#                                                                             #
+--###############################################################################
+--#                               Implementation                                #
+--###############################################################################
+
+IMPORT '${MODULE_HOME}/pig/macro/of-order-view.macro';
+
+orders_till_last_hour =
+  get_orders_till_last_hour()
+;
+
+cancelled_orders =
+  FILTER orders_till_last_hour
+  BY (
+     status == '9000'
+     AND
+     message_type == 'ORDER_CANCEL'
+  )
+;
+
+cancelled_orders_with_required_fields =
+  FOREACH cancelled_orders
+  GENERATE
+    order_line_key,
+    ship_node,
+    delivery_method,
+    fullfillment_type,
+    node_type,
+    change_in_order_qty
+;
+
+released_orders =
+  FILTER orders_till_last_hour
+  BY (
+     message_type == 'ORDER_RELEASE'
+  )
+;
+
+released_orders_only_line_total_and_quantity =
+  FOREACH released_orders
+  GENERATE
+    order_release_key,
+    order_line_key,
+    line_total,
+    status_qty
+;
+
+released_orders_for_cancelled_orders =
+  JOIN
+    cancelled_orders_with_required_fields BY order_line_key,
+    released_orders_only_line_total_and_quantity BY order_line_key
+;
+
+gen_released_orders_for_cancelled_orders =
+  FOREACH released_orders_for_cancelled_orders
+  GENERATE
+    cancelled_orders_with_required_fields::order_line_key as order_line_key ,
+    cancelled_orders_with_required_fields::ship_node as ship_node,
+    cancelled_orders_with_required_fields::delivery_method as delivery_method ,
+    cancelled_orders_with_required_fields::fullfillment_type as fullfillment_type,
+    cancelled_orders_with_required_fields::node_type as node_type ,
+    ConvertToDouble(cancelled_orders_with_required_fields::change_in_ordered_quantity) as cancelled_units,
+    released_orders_only_line_total_and_quantity::order_release_key,
+    released_orders_only_line_total_and_quantity::line_total,
+    ConvertToDouble(released_orders_only_line_total_and_quantity::status_qty),
+    ConvertToDouble(released_orders_only_line_total_and_quantity::line_total)/ ConvertToDouble(released_orders_only_line_total_and_quantity::status_qty) AS unit_price:double,
+    ConvertToDouble(cancelled_orders_with_required_fields::change_in_ordered_quantity) *
+    (ConvertToDouble(released_orders_only_line_total_and_quantity::line_total)
+    /
+    ConvertToDouble(released_orders_only_line_total_and_quantity::status_qty)) AS cancelled_dollars
+;
+
+order_cacelled_kpi_int =
+  GROUP gen_released_orders_for_cancelled_orders
+  BY (ship_node,delivery_method, fullfillment_type, node_type)
+;
+
+of_kpi_cancelled =
+  FOREACH order_cacelled_kpi_int
+  {
+    cancelled_order_releases_distinct =  DISTINCT gen_released_orders_for_cancelled_orders.order_release_key;
+    GENERATE
+    (long)$CURRENT_HOUR as current_hour,
+	FLATTEN(group) AS (ship_node:chararray,delivery_method:chararray, fullfillment_type:chararray,node_type:chararray),
+    SUM(gen_released_orders_for_cancelled_orders.cancelled_units) AS cancelled_order_units:double,
+    SUM(gen_released_orders_for_cancelled_orders.cancelled_dollars) AS cancelled_order_sales_dollar:double,
+    COUNT (cancelled_order_releases_distinct) AS  cancelled_order_releases:long;
+}
+;
+
+STORE
+    of_kpi_cancelled
+INTO
+    '${mvn.environment.prefix}db_work.${mvn.environment.prefix}of_kpi_cancelled'
+USING org.apache.hive.hcatalog.pig.HCatStorer();
